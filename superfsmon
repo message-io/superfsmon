@@ -75,6 +75,9 @@ monitor_group.add_argument('-d', '--directories',
 monitor_group.add_argument('--no-recursion',
         dest='recursive', action='store_false',
         help="don't watch for changes in subdirectories")
+monitor_group.add_argument('--running-only',
+        dest='running_only', action='store_false',
+        help="Restart RUNNING processes only")
 
 program_group = parser.add_argument_group('programs')
 program_group.add_argument('program', metavar='PROG', nargs='*',
@@ -135,7 +138,12 @@ def requires_restart(proc):
     statename = proc['statename']
     pid = proc['pid']
 
-    return ((statename == 'STARTING' or statename == 'RUNNING') and
+    if args.running_only:
+       state_ok = statename == 'RUNNING'
+    else:
+       state_ok = statename == 'STARTING' or statename == 'RUNNING'
+
+    return ((state_ok) and
             (args.any or name in args.program or group in args.group) and
             pid != os.getpid())
 
