@@ -76,7 +76,7 @@ monitor_group.add_argument('--no-recursion',
         dest='recursive', action='store_false',
         help="don't watch for changes in subdirectories")
 monitor_group.add_argument('--running-only',
-        dest='running_only', action='store_false',
+        dest='running_only', action='store_true',
         help="Restart RUNNING processes only")
 
 program_group = parser.add_argument_group('programs')
@@ -139,9 +139,9 @@ def requires_restart(proc):
     pid = proc['pid']
 
     if args.running_only:
-       state_ok = statename == 'RUNNING'
+       state_ok = (statename == 'RUNNING')
     else:
-       state_ok = statename == 'STARTING' or statename == 'RUNNING'
+       state_ok = (statename == 'STARTING' or statename == 'RUNNING')
 
     return ((state_ok) and
             (args.any or name in args.program or group in args.group) and
@@ -149,13 +149,14 @@ def requires_restart(proc):
 
 
 def restart_programs():
-    info('restarting programs')
+    #info('restarting programs')
 
     procs = rpc.supervisor.getAllProcessInfo()
     restart_names = [proc['group'] + ':' + proc['name']
                      for proc in procs if requires_restart(proc)]
 
     for name in list(restart_names):
+        info("Stopping " + name)
         try:
             rpc.supervisor.stopProcess(name, False)
         except xmlrpclib.Fault as exc:
@@ -168,6 +169,7 @@ def restart_programs():
             if proc['statename'] != 'STOPPED':
                 continue
             try:
+                info("Starting " + name)
                 rpc.supervisor.startProcess(name, False)
                 restart_names.remove(name)
             except xmlrpclib.Fault as exc:
@@ -179,7 +181,8 @@ def restart_programs():
 def commence_restart():
     if not pre_restarting_lock.acquire(False):
         return
-    info('detected change, commencing restart of programs')
+    # info('detected change, commencing restart of programs')
+    info('detected change, checking if programs need restarting...')
     time.sleep(0.1)
     restarting_lock.acquire()
     pre_restarting_lock.release()
