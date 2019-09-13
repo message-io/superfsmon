@@ -27,6 +27,7 @@ import argparse
 import re
 import signal
 import threading
+import datetime
 
 try:
     import xmlrpc.client as xmlrpclib
@@ -93,12 +94,16 @@ restarting_lock = threading.Lock()
 
 
 def info(msg, file=sys.stdout):
-    print('superfsmon: ' + msg, file=file)
+    now = datetime.datetime.now()
+    datestr = now.strftime("%Y-%m-%d %H:%M:%S")
+    print('%s - superfsmon: %s' % (datestr, msg), file=file)
     file.flush()
 
 
 def error(msg, status=1):
-    info('error: ' + msg, file=sys.stderr)
+    now = datetime.datetime.now()
+    datestr = now.strftime("%Y-%m-%d %H:%M:%S")
+    info('%s - error: %s' % (datestr, msg), file=sys.stderr)
     sys.exit(status)
 
 
