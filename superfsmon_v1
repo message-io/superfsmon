@@ -52,12 +52,30 @@ parser.add_argument('--disable', metavar='FLAG', nargs='?', type=int, const=1,
 monitor_group = parser.add_argument_group('directory monitoring')
 monitor_group.add_argument('path', metavar='PATH',
         help='directory path to watch for changes')
+monitor_group.add_argument('-r', '--recognize', metavar='PATTERN',
+        action='append', default=None,
+        help='recognize changes to file paths matching the pattern')
+monitor_group.add_argument('-i', '--ignore', metavar='PATTERN',
+        action='append', default=[],
+        help='ignore changes to file paths matching the pattern')
+monitor_group.add_argument('--recognize-regex', metavar='REGEX',
+        action='append', default=None,
+        help='recognize changes to file paths matching the regular expression')
+monitor_group.add_argument('--ignore-regex', metavar='REGEX',
+        action='append', default=[],
+        help='ignore changes to file paths matching the regular expression')
+monitor_group.add_argument('-f', '--hidden-files',
+        dest='ignore_hidden', action='store_false',
+        help='recognize changes to hidden files')
+monitor_group.add_argument('-c', '--case-insensitive', 
+        dest='case_sensitive', action='store_false',
+        help='case insensitive file path matching')
+monitor_group.add_argument('-d', '--directories',
+        dest='ignore_directories', action='store_false',
+        help='recognize changes to directories')
 monitor_group.add_argument('--no-recursion',
         dest='recursive', action='store_false',
-        help="Don't watch for changes in subdirectories (Currentely disabled)")
-monitor_group.add_argument('-f', '--file',
-        dest='version_file', action='store_false', default='build.txt',
-        help='version file to monitor')
+        help="don't watch for changes in subdirectories")
 monitor_group.add_argument('--running-only',
         dest='running_only', action='store_true',
         help="Restart RUNNING processes only")
@@ -70,10 +88,10 @@ program_group.add_argument('-g', '--group', action='append', default=[],
 program_group.add_argument('-a', '--any', action='store_true',
         help='restart any child of this supervisor')
 
+
 pre_restarting_lock = threading.Lock()
 restarting_lock = threading.Lock()
 
-current_version = ''
 
 def info(msg, file=sys.stdout):
     now = datetime.datetime.now()
@@ -93,8 +111,23 @@ def usage_error(msg):
     parser.print_usage(file=sys.stderr)
     error(msg, status=2)
 
+
 def validate_args(args):
-    pass
+    if args.enable is not None and args.disable is not None:
+        usage_error('argument --enable not allowed with --disable')
+
+    if ((args.recognize or args.ignore) and
+        (args.recognize_regex or args.ignore_regex)):
+        usage_error('arguments --recognize and --ignore not allowed with '
+                    '--recognize-regex and --ignore-regex')
+
+    if args.program and args.any:
+        usage_error('argument PROG not allowed with --any')
+    if args.group and args.any:
+        usage_error('argument --group not allowed with --any')
+    if not args.program and not args.group and not args.any:
+        usage_error('one of the arguments PROG --group --any is required')
+
 
 def handle_term(signum, frame):
     info('terminating')
@@ -103,26 +136,12 @@ def handle_term(signum, frame):
     except NameError:
         sys.exit()
 
-def get_version():
-    filename = args.path + "/build.txt"
-    content = ''
-    if os.path.exists(filename):
-        fp = open(filename, "r")
-        content = fp.read()
-        fp.close()
-    else:
-        info('Build file not found at: ' + filename)
-
-    return content.strip()
 
 def requires_restart(proc):
     name = proc['name']
     group = proc['group']
     statename = proc['statename']
     pid = proc['pid']
-
-    if pid == os.getpid():
-       return False
 
     if args.running_only:
        state_ok = (statename == 'RUNNING')
@@ -133,25 +152,9 @@ def requires_restart(proc):
             (args.any or name in args.program or group in args.group) and
             pid != os.getpid())
 
-def has_version_changed():
-    global current_version
-    new_version = get_version()
-
-    info('Current version: ' + current_version);
-    info('New version: ' + new_version);
-
-    return current_version != new_version
-
-
 
 def restart_programs():
     #info('restarting programs')
-
-    if not has_version_changed():
-        info("Version unchanged. Refusing to restart.")
-        return False
-    else:
-        info("Version change detected")
 
     procs = rpc.supervisor.getAllProcessInfo()
     restart_names = [proc['group'] + ':' + proc['name']
@@ -164,8 +167,6 @@ def restart_programs():
         except xmlrpclib.Fault as exc:
             info('warning: failed to stop process: ' + exc.faultString)
             restart_names.remove(name)
-
-    update_vesion = len(restart_names)>0
 
     while restart_names:
         for name in list(restart_names):
@@ -181,16 +182,12 @@ def restart_programs():
                 restart_names.remove(name)
         time.sleep(0.1)
 
-    if update_vesion:
-        current_version = get_version()
-        info("Updated current version to " + current_version)
-
 
 def commence_restart():
     if not pre_restarting_lock.acquire(False):
         return
     # info('detected change, commencing restart of programs')
-    info('Detected file change.')
+    info('detected change, checking if programs need restarting...')
     time.sleep(0.1)
     restarting_lock.acquire()
     pre_restarting_lock.release()
@@ -205,17 +202,19 @@ class RestartEventHandler(object):
         thread.start()
 
 
+class RestartRegexMatchingEventHandler(RestartEventHandler,
+                                       RegexMatchingEventHandler):
+    pass
+
+
 class RestartPatternMatchingEventHandler(RestartEventHandler,
                                          PatternMatchingEventHandler):
     pass
 
 
-
 if __name__ == '__main__':
     args = parser.parse_args()
     validate_args(args)
-
-    current_version = get_version()
 
     if args.enable == 0 or args.disable:
         info('functionality disabled, waiting for termination signal')
@@ -223,20 +222,33 @@ if __name__ == '__main__':
         signal.signal(signal.SIGTERM, handle_term)
         signal.pause()
 
-
-    event_handler = RestartPatternMatchingEventHandler(
-                patterns= '*' + args.version_file,
-                case_sensitive=False)
+    if args.recognize_regex or args.ignore_regex:
+        try:
+            event_handler = RestartRegexMatchingEventHandler(
+                    regexes=args.recognize_regex or ['.*'],
+                    ignore_regexes=args.ignore_regex
+                    + ['.*/\..*'] if args.ignore_hidden else [],
+                    ignore_directories=args.ignore_directories,
+                    case_sensitive=args.case_sensitive)
+        except re.error as exc:
+            error('regex: ' + str(exc))
+    else:
+        event_handler = RestartPatternMatchingEventHandler(
+                patterns=args.recognize,
+                ignore_patterns=args.ignore
+                + ['*/.*'] if args.ignore_hidden else [],
+                ignore_directories=args.ignore_directories,
+                case_sensitive=args.case_sensitive)
 
     observer = Observer()
-    observer.schedule(event_handler, args.path, recursive=False)
+    observer.schedule(event_handler, args.path, recursive=args.recursive)
 
     try:
         rpc = childutils.getRPCInterface(os.environ)
     except KeyError as exc:
         error('missing environment variable ' + str(exc))
 
-    info('Watching ' + args.path + '/' + args.version_file)
+    info('watching ' + args.path)
 
     try:
         observer.start()
